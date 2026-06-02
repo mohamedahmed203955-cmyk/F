@@ -94,7 +94,7 @@ export interface CommandCenterData {
   snapshot: Snapshot | null;
   events: LiveEvent[];
   financeSummary: FinanceSummary | null;
-  inventoryAlerts: InventoryAlert[] | null;
+  inventoryAlerts: InventoryAlert[];
   shipments: any[];
   loading: boolean;
   error: string | null;
@@ -177,55 +177,60 @@ function buildPipelineStages(devices: any[] = []): PipelineStage[] {
   });
 
   // Count devices per stage
-  devices.forEach((device) => {
-    const status = device.status?.toLowerCase() || "";
-    
-    // Map device status to pipeline stage
-    let stageKey = "reception";
-    
-    if (["delivered"].includes(status)) stageKey = "delivered";
-    else if (["ready", "invoiced"].includes(status)) stageKey = "ready";
-    else if (["ready_for_testing", "qc_pass", "qc_fail", "rework"].includes(status))
-      stageKey = "quality_control";
-    else if (["waiting_parts"].includes(status)) stageKey = "waiting_parts";
-    else if (["in_repair", "paused", "external_service", "waiting_customer"].includes(status))
-      stageKey = "repair";
-    else if (["accepted_by_technician"].includes(status)) stageKey = "technician";
-    else if (["pending_assignment", "assigned", "pending_acceptance"].includes(status))
-      stageKey = "assignment";
-    else if (["diagnosing"].includes(status)) stageKey = "diagnosis";
-    else if (["pending_checkup"].includes(status)) stageKey = "checkup";
-    else if (["received"].includes(status)) stageKey = "reception";
+  if (Array.isArray(devices)) {
+    devices.forEach((device) => {
+      const status = device.status?.toLowerCase() || "";
+      
+      // Map device status to pipeline stage
+      let stageKey = "reception";
+      
+      if (["delivered"].includes(status)) stageKey = "delivered";
+      else if (["ready", "invoiced"].includes(status)) stageKey = "ready";
+      else if (["ready_for_testing", "qc_pass", "qc_fail", "rework"].includes(status))
+        stageKey = "quality_control";
+      else if (["waiting_parts"].includes(status)) stageKey = "waiting_parts";
+      else if (["in_repair", "paused", "external_service", "waiting_customer"].includes(status))
+        stageKey = "repair";
+      else if (["accepted_by_technician"].includes(status)) stageKey = "technician";
+      else if (["pending_assignment", "assigned", "pending_acceptance"].includes(status))
+        stageKey = "assignment";
+      else if (["diagnosing"].includes(status)) stageKey = "diagnosis";
+      else if (["pending_checkup"].includes(status)) stageKey = "checkup";
+      else if (["received"].includes(status)) stageKey = "reception";
 
-    if (stageMap[stageKey]) {
-      stageMap[stageKey].count++;
-    }
-  });
+      if (stageMap[stageKey]) {
+        stageMap[stageKey].count++;
+      }
+    });
+  }
 
   return Object.values(stageMap);
 }
 
 function buildTechnicianLoads(technicians: any[] = [], devices: any[] = []): TechnicianLoad[] {
-  return (technicians || [])
-    .filter((t) => t.user_id) // Only valid technicians
+  if (!Array.isArray(technicians)) return [];
+
+  return technicians
+    .filter((t) => t && t.user_id) // Only valid technicians
     .map((tech, index) => {
       // Count devices assigned to this technician
-      const assigned = devices.filter(
-        (d) => d.assigned_to === tech.user_id || d.technician_id === tech.user_id
-      );
+      const assigned = Array.isArray(devices)
+        ? devices.filter((d) => d && (d.assigned_to === tech.user_id || d.technician_id === tech.user_id))
+        : [];
 
       const active = assigned.filter(
-        (d) => !["delivered", "rejected", "cancelled"].includes(d.status?.toLowerCase() || "")
+        (d) => d && !["delivered", "rejected", "cancelled"].includes(d.status?.toLowerCase() || "")
       ).length;
 
       const overdue = assigned.filter(
         (d) =>
+          d &&
           d.receivedAt &&
           new Date().getTime() - new Date(d.receivedAt).getTime() > 7 * 24 * 60 * 60 * 1000 &&
           !["delivered", "rejected"].includes(d.status?.toLowerCase() || "")
       ).length;
 
-      const completed = assigned.filter((d) => d.status?.toLowerCase() === "delivered").length;
+      const completed = assigned.filter((d) => d && d.status?.toLowerCase() === "delivered").length;
 
       return {
         id: tech.user_id,
@@ -243,19 +248,19 @@ function buildInventoryAlerts(parts: any[] = []): InventoryAlert[] {
   if (!Array.isArray(parts)) return [];
 
   return parts
-    .filter((p) => p.stock <= p.min_stock && (p.stock !== undefined))
+    .filter((p) => p && p.stock !== undefined && p.stock <= (p.min_stock || 0))
     .map((part) => {
       const severity =
         part.stock === 0
           ? "critical"
-          : part.stock <= Math.ceil(part.min_stock * 0.3)
+          : part.stock <= Math.ceil((part.min_stock || 0) * 0.3)
             ? "critical"
-            : part.stock <= Math.ceil(part.min_stock * 0.6)
+            : part.stock <= Math.ceil((part.min_stock || 0) * 0.6)
               ? "high"
               : "medium";
 
       return {
-        id: part.id,
+        id: part.id || `part_${Math.random()}`,
         name: part.name || "Unknown Part",
         stock: part.stock || 0,
         min: part.min_stock || 0,
@@ -275,6 +280,7 @@ function buildLiveEvents(auditLog: any[] = []): LiveEvent[] {
   return auditLog
     .slice(0, 50) // Last 50 events
     .map((log) => {
+      if (!log) return null;
       const eventType = log.type || log.action || "unknown";
       const config = EVENT_TYPE_CONFIG[eventType] || { label: eventType, color: "#6b7280" };
 
@@ -291,14 +297,30 @@ function buildLiveEvents(auditLog: any[] = []): LiveEvent[] {
         path: `/devices?q=${log.device_code}`,
       };
     })
-    .sort((a, b) => new Date(b.ts || "").getTime() - new Date(a.ts || "").getTime());
+    .filter((e) => e !== null) // Remove nulls
+    .sort((a, b) => {
+      if (!a || !b) return 0;
+      return new Date(b.ts || "").getTime() - new Date(a.ts || "").getTime();
+    });
 }
 
 function calculateFinanceSummary(invoices: any[] = []): FinanceSummary {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const todayInvoices = (invoices || []).filter((inv) => {
+  if (!Array.isArray(invoices)) {
+    return {
+      revenue_today: 0,
+      revenue_month: 0,
+      collections_due: 0,
+      collections_due_count: 0,
+      cash_balance: 0,
+      expenses_today: 0,
+    };
+  }
+
+  const todayInvoices = invoices.filter((inv) => {
+    if (!inv) return false;
     const invDate = new Date(inv.date || inv.created_at || "");
     invDate.setHours(0, 0, 0, 0);
     return invDate.getTime() === today.getTime();
@@ -313,7 +335,7 @@ function calculateFinanceSummary(invoices: any[] = []): FinanceSummary {
 
   return {
     revenue_today: revenue,
-    revenue_month: invoices.reduce((sum, inv) => sum + (inv.total || inv.amount || 0), 0),
+    revenue_month: invoices.reduce((sum, inv) => sum + (inv?.total || inv?.amount || 0), 0),
     collections_due: due,
     collections_due_count: dueCount,
     cash_balance: 0, // TODO: fetch from cashboxes
@@ -330,7 +352,7 @@ export function useCommandCenterData(options?: { branchId?: string; period?: str
     snapshot: null,
     events: [],
     financeSummary: null,
-    inventoryAlerts: null,
+    inventoryAlerts: [],
     shipments: [],
     loading: true,
     error: null,
@@ -354,11 +376,19 @@ export function useCommandCenterData(options?: { branchId?: string; period?: str
         ]
       );
 
+      // Normalize data arrays
+      const deviceList = Array.isArray(devices) ? devices : devices?.data ? devices.data : [];
+      const techList = Array.isArray(technicians) ? technicians : technicians?.data ? technicians.data : [];
+      const branchList = Array.isArray(branches) ? branches : branches?.data ? branches.data : [];
+      const auditList = Array.isArray(auditLog) ? auditLog : auditLog?.data ? auditLog.data : [];
+      const invoiceList = Array.isArray(invoices) ? invoices : invoices?.data ? invoices.data : [];
+      const productList = Array.isArray(products) ? products : products?.data ? products.data : [];
+      const shipmentList = Array.isArray(shipments) ? shipments : shipments?.data ? shipments.data : [];
+
       // Build pipeline stages
-      const pipelineStages = buildPipelineStages(devices?.data || devices || []);
+      const pipelineStages = buildPipelineStages(deviceList);
 
       // Calculate overview
-      const deviceList = devices?.data || devices || [];
       const overview = {
         received_today: pipelineStages.find((s) => s.key === "reception")?.count || 0,
         with_technicians: pipelineStages.find((s) => s.key === "technician")?.count || 0,
@@ -366,35 +396,36 @@ export function useCommandCenterData(options?: { branchId?: string; period?: str
         ready_for_delivery: pipelineStages.find((s) => s.key === "ready")?.count || 0,
         delivered_today: pipelineStages.find((s) => s.key === "delivered")?.count || 0,
         sla_violations: deviceList.filter((d) => {
-          if (!d.receivedAt) return false;
+          if (!d || !d.receivedAt) return false;
           const age = new Date().getTime() - new Date(d.receivedAt).getTime();
           return age > 5 * 24 * 60 * 60 * 1000; // > 5 days
         }).length,
-        no_updates: deviceList.filter((d) => !d.history || d.history.length === 0).length,
+        no_updates: deviceList.filter((d) => !d || !d.history || d.history.length === 0).length,
       };
 
       // Build technician loads
-      const techLoads = buildTechnicianLoads(technicians?.data || technicians || [], deviceList);
+      const techLoads = buildTechnicianLoads(techList, deviceList);
 
       // Build inventory alerts
-      const inventoryAlerts = buildInventoryAlerts(products?.data || products || []);
+      const inventoryAlerts = buildInventoryAlerts(productList);
 
       // Build live events
-      const events = buildLiveEvents(auditLog?.data || auditLog || []);
+      const events = buildLiveEvents(auditList);
 
       // Build finance summary
-      const financeSummary = calculateFinanceSummary(invoices?.data || invoices || []);
+      const financeSummary = calculateFinanceSummary(invoiceList);
 
       // Build snapshot
       const snapshot: Snapshot = {
         overview,
         pipeline: { stages: pipelineStages },
         technicians: techLoads,
-        branches: branches?.data || branches || [],
+        branches: branchList,
         online_users: Math.floor(Math.random() * 10) + 1, // TODO: connect to real session tracking
         alerts: [],
         delayed_devices: deviceList.filter(
           (d) =>
+            d &&
             d.receivedAt &&
             new Date().getTime() - new Date(d.receivedAt).getTime() > 3 * 24 * 60 * 60 * 1000
         ),
@@ -406,12 +437,13 @@ export function useCommandCenterData(options?: { branchId?: string; period?: str
         events,
         financeSummary,
         inventoryAlerts,
-        shipments: shipments?.data || shipments || [],
+        shipments: shipmentList,
         loading: false,
         error: null,
         lastUpdated: new Date(),
       });
     } catch (err) {
+      console.error("Error fetching command center data:", err);
       setData((prev) => ({
         ...prev,
         loading: false,
